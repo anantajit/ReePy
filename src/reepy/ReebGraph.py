@@ -33,7 +33,7 @@ class ReebGraph(DiGraph):
           we consider these points to be "continuous" with respect to each other
     """
 
-    def append_trajectory(self, traj, build=True):
+    def append_trajectory(self, traj):
         trajectory_id = self._trajectory_count
         self._trajectory_count += 1
 
@@ -67,12 +67,11 @@ class ReebGraph(DiGraph):
                     bundle = _Bundle(point, trajectory_id)
                     self.bundles[level].append(bundle)
 
-        if build:
-            self.__build()
+        self.__build()
 
     def append_trajectories(self, trajs: Iterable):
         for traj in trajs:
-            self.append_trajectory(traj, build=False)
+            self.append_trajectory(traj)
         self.__build()
 
     def __build(self):
