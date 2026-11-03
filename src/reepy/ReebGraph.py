@@ -1,126 +1,87 @@
-from typing import Iterable
+from itertools import combinations
 
-from networkx import DiGraph
-
-
-class _Bundle:
-    def __init__(self, point, trajectory_id):
-        self.point = point
-        self.trajectory_ids = {trajectory_id}
-
-    def add_trajectory(self, trajectory_id):
-        self.trajectory_ids.add(trajectory_id)
+from networkx import MultiDiGraph
 
 
-class ReebGraph(DiGraph):
-    """
-    orderer: f(x) returns a real, scalar value
-    equivalence: f(x, y) returns True if two classes are equivalent,
-                 False otherwise. Must be reflexive and symmetric
-    """
-
-    def __init__(self, orderer=None, equivalence=None):
+class ReebGraph(MultiDiGraph):
+    def __init__(self, level, connectivity, continuity, store_points=False):
         super().__init__()
+        self.level = level
+        self.connectivity = connectivity
+        self.continuity = continuity
+        self.store_points = store_points
+        self._points = []
+        self._components = {}
 
-        self.orderer = (lambda x: x) if orderer is None else orderer
-        self.equivalence = (lambda x, y: x == y) if equivalence is None else equivalence
+    def add(self, point):
+        self._points.append(point)
+        self._build()
 
-        self.bundles = {}
-        self._trajectory_count = 0
+    def flatten(self, data):
+        return list(data)
 
-    """
-    traj: an iterable of points (input into orderer/equivalence). Conceptually,
-          we consider these points to be "continuous" with respect to each other
-    """
+    def _build(self, level_sets=None):
+        if level_sets is None:
+            level_sets = {}
+            for point in self._points:
+                level_sets.setdefault(self.level(point), []).append(point)
 
-    def append_trajectory(self, traj):
-        trajectory_id = self._trajectory_count
-        self._trajectory_count += 1
-
-        level_sets = {}
-
-        # compute level sets
-        for point in traj:
-            level = self.orderer(point)
-            if level not in level_sets:
-                level_sets[level] = []
-            level_sets[level].append(point)
-
-        # once level sets are computed, construct local bundles
-        for level, points in level_sets.items():
-            if level not in self.bundles:
-                self.bundles[level] = []
-
-            for point in points:
-                connected = False
-
-                # check if point matches any bundle
-                # by equivalence relation property, bundle can connect
-                # to at most one bundle
-                for bundle in self.bundles[level]:
-                    if self.equivalence(bundle.point, point):
-                        bundle.add_trajectory(trajectory_id)
-                        connected = True
-                        break
-
-                if not connected:
-                    bundle = _Bundle(point, trajectory_id)
-                    self.bundles[level].append(bundle)
-
-        self.__build()
-
-    def append_trajectories(self, trajs: Iterable):
-        for traj in trajs:
-            self.append_trajectory(traj)
-        self.__build()
-
-    def __build(self):
-        # clear existing graph nodes/edges so build is idempotent
-        self.clear()
-
-        # states[traj_id] -> the node id of the last node that trajectory belonged to
-        states = {}
-        # node_bundles[node_id] -> the bundle at that node (for trajectory_ids lookup)
-        node_bundles = {}
-
-        nodec = 0
-
-        # iterate bundles in sorted level order
-        disappear_level = max(self.bundles.keys())
-        for level in sorted(self.bundles.keys()):
-            for bundle in self.bundles[level]:
-                curr_ids = bundle.trajectory_ids
-
-                # check if connectivity changed vs previous bundle
-                first_traj = next(iter(curr_ids))
-                prev_node = states.get(first_traj)
-                prev_ids = (
-                    node_bundles[prev_node].trajectory_ids
-                    if prev_node is not None
-                    else None
+        graph = self
+        graph.clear()
+        self._components = {}
+        previous = []
+        for level in sorted(level_sets):
+            current = []
+            remaining = level_sets[level]
+            while remaining:
+                selected = next(
+                    indices
+                    for size in range(len(remaining), 0, -1)
+                    for indices in combinations(range(len(remaining)), size)
+                    if size == 1 or self.connectivity([remaining[i] for i in indices])
                 )
+                points = [remaining[i] for i in selected]
+                self._components.setdefault(level, []).append(points)
+                selected = set(selected)
+                remaining = [
+                    point for i, point in enumerate(remaining) if i not in selected
+                ]
+                node = graph.number_of_nodes()
+                graph.add_node(node, level=level, points=points)
+                current.append(node)
+                for source in previous:
+                    if any(
+                        self.continuity(a, b)
+                        for a in graph.nodes[source]["points"]
+                        for b in points
+                    ):
+                        graph.add_edge(source, node)
+            previous = current
 
-                if curr_ids != prev_ids or level == disappear_level:
-                    # create a new node
-                    self.add_node(
-                        nodec,
-                        level=level,
-                        point=bundle.point,
-                        trajs=bundle.trajectory_ids,
-                    )
-                    node_bundles[nodec] = bundle
+        for node in list(graph.nodes):
+            if graph.in_degree(node) == 1 and graph.out_degree(node) == 1:
+                source = next(iter(graph.predecessors(node)))
+                target = next(iter(graph.successors(node)))
+                graph.add_edge(source, target)
+                graph.remove_node(node)
 
-                    predecessor_counts = {}
-                    for traj in curr_ids:
-                        if traj in states:
-                            pred = states[traj]
-                            predecessor_counts[pred] = (
-                                predecessor_counts.get(pred, 0) + 1
-                            )
-                        states[traj] = nodec
+    def validate(self):
+        return all(
+            all(self.connectivity(points) for points in clusters)
+            and all(not self.connectivity(a + b) for a, b in combinations(clusters, 2))
+            for clusters in self._components.values()
+        )
 
-                    for pred, count in predecessor_counts.items():
-                        weight = count / len(node_bundles[pred].trajectory_ids)
-                        self.add_edge(pred, nodec, weight=weight)
-
-                    nodec += 1
+    def to_networkx(self, store_points=None):
+        if store_points is None:
+            store_points = self.store_points
+        graph = MultiDiGraph()
+        for node, attributes in self.nodes(data=True):
+            graph.add_node(
+                node,
+                **{key: value for key, value in attributes.items() if key != "points"},
+            )
+            if store_points:
+                graph.nodes[node]["points"] = list(attributes["points"])
+        graph.add_edges_from(self.edges(keys=True))
+        return graph

@@ -1,3 +1,4 @@
+from . import graph, trajectory, utils
 from .ReebGraph import ReebGraph
-from .SparseReebGraph import SparseReebGraph
-from .SequentialReebGraph import SequentialReebGraph
+
+__all__ = ["ReebGraph", "graph", "trajectory", "utils"]

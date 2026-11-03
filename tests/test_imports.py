@@ -2,4 +2,4 @@ import reepy
 
 
 def test_import():
-    reeb = reepy.ReebGraph()
+    reepy.ReebGraph(lambda point: 0, lambda points: True, lambda a, b: True)
